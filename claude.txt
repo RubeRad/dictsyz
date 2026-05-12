@@ -1,0 +1,67 @@
+===========================================================================
+I want to write a python script to parse a csv-formatted english dictionary, so
+that it is held in a python dictionary so that the keys are all the words being
+defined, and the values are the lists of words in the definition. The lists of
+words in the definition need to be regularized or standardized or I don't know
+what to call it but reduced to common/root form so that every word in every
+definition list, can be found as a key in the dictionary.  You can use a
+standard python library for natural language if I can install it with pip. After
+parsing, I want to save the python dictionary out in an easily-recoverable
+format such as pickle or a csv file. Grammatical codes in parentheses are not
+important, and multiple definitions or parts of speech are not important, just
+concatenate all the words per python dictionary key. Order of words in the
+python dictionary value lists is not important; uniqueness (no repeated words)
+is a nice-to-have. I can paste a sample of the source dictionary to demonstrate
+the format:
+
+Accidentalism (n.) Accidental character or effect.
+Accidentality (n.) The quality of being accidental; accidentalness.
+Accidentally (adv.) In an accidental manner; unexpectedly; by chance; unintentionally; casually; fortuitously; not essentially.
+Accidentalness (n.) The quality of being accidental; casualness.
+Accidie (n.) Sloth; torpor.
+Accipenser (n.) See Acipenser.
+Accipient (n.) A receiver.
+Accipiters (pl. ) of Accipiter
+Accipitres (pl. ) of Accipiter
+Accipiter (n.) A genus of rapacious birds; one of the Accipitres or Raptores.
+Accipiter (n.) A bandage applied over the nose, resembling the claw of a hawk.
+Accipitral (n.) Pertaining to, or of the nature of, a falcon or hawk; hawklike.
+Accipitres (n. pl.) The order that includes rapacious birds. They have a hooked bill, and sharp, strongly curved talons. There are three families, represented by the vultures, the falcons or hawks, and the owls.
+
+===========================================================================
+
+
+
+
+Here's the script. The key design decisions:
+
+- **`nltk`** for lemmatization (WordNetLemmatizer) — this is the standard NLP library for this kind of task. It reduces words to their root/lemma form (e.g. "rapacious" stays, "birds" → "bird", "curved" → "curve").
+- **Parsing**: Each line's format is `Word (pos.) Definition text.` — the script strips the part-of-speech tag in parentheses, then tokenizes and lemmatizes the definition words.
+- **Output**: Both `pickle` (fast, exact recovery) and `json` (human-readable) are saved.
+- **Coverage gap**: Lemmatization won't guarantee 100% of definition words appear as dictionary keys — that's a property of the dictionary's own completeness, not fixable in parsing. But every word will be in its most "root" form.**Setup — run once after downloading:**
+```bash
+pip install nltk
+python -c "import nltk; nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('punkt_tab')"
+```
+
+**Run:**
+```bash
+python parse_dictionary.py dictionary.txt
+# produces: dictionary_parsed.pkl  and  dictionary_parsed.json
+```
+
+**Recover later:**
+```python
+import pickle
+with open("dictionary_parsed.pkl", "rb") as f:
+    d = pickle.load(f)
+d["accidentally"]  # → ['accidental', 'by', 'casualty', 'chance', 'essentially', ...]
+```
+
+**Key design notes:**
+
+- **Lemmatization with POS context** — each token is POS-tagged first (noun/verb/adj/adv), then lemmatized accordingly. This gives more accurate roots than lemmatizing blindly (e.g. "curved" → "curve" as a verb vs "curve" as a noun both work correctly).
+- **POS codes stripped** — the `(n.)`, `(adv.)`, `(n. pl.)` etc. are removed before any word extraction.
+- **Multi-line merging** — entries like the two `Accipiter` lines are merged into one key with a unified, deduplicated word set.
+- **Both pickle and JSON saved** — pickle for fast exact recovery in Python, JSON as a human-readable backup.
+- **Coverage caveat**: lemmatization gets you very close, but 100% of definition words appearing as headwords is a property of the dictionary's own completeness — some words (like "the", "of", or rare words) simply won't be headwords no matter what normalization you apply.
