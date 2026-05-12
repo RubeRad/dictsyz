@@ -310,4 +310,119 @@ nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
 
 That one-line change could get you close to the NLTK speed while keeping the better lemmatization.
 
+===========================================================================
+spaCy was not much of an improvement. It lemmatized others-->other, but couldn't
+figure out -ly adverbs usually, figuratively, suddenly, excessively, etc. Should
+a rule be put into the lemmatizer, or post-processing, to reduce *ly to * if the
+* is a headword? Or do you have a better design?
+===========================================================================
+
+The `-ly` stripping idea is sound but has edge cases — `only`, `early`, `holy`, `ugly`, `fly`, `ply` would all get mangled. The safer version of your idea is exactly what you said: strip `-ly` and check if the result is a headword, and only then substitute. That makes it self-correcting — it won't fire unless the stripped form actually exists in the dictionary.
+
+But rather than hardcoding just the `-ly` rule, there are a handful of other suffix patterns with the same structure that you'd likely hit next:
+
+- `-ness` → `` (sadness→sad, softness→soft)
+- `-ment` → `` (improvement→improve)  
+- `-tion`/`-sion` → various (but messier, skip for now)
+- `-ly` → `` (usually→usual, figuratively→figurative)
+- `-er`/`-est` comparative/superlative — spaCy should handle these already
+
+The cleanest design is a post-processing step that runs after spaCy lemmatization, since it needs access to the headword set — which isn't available during parsing. Something like:
+
+```python
+SUFFIX_RULES = [
+    ("ness", ""),   # sadness → sad
+    ("ment", ""),   # improvement → improve  
+    ("ly",   ""),   # usually → usual
+    ("ical", "ic"), # botanical → botanic
+]
+
+def post_lemmatize(word: str, headwords: set) -> str:
+    if word in headwords:
+        return word
+    for suffix, replacement in SUFFIX_RULES:
+        if word.endswith(suffix):
+            candidate = word[:-len(suffix)] + replacement
+            if candidate in headwords:
+                return candidate
+    return word
+```
+
+Then after `parse_dictionary` returns and you have the full headword set, do a second pass over all the value lists substituting where possible. Words that don't match any rule, or whose stripped form isn't a headword, pass through unchanged.
+
+The two-pass design keeps the rules simple and self-validating — the headword set is the oracle, so false positives are impossible. Want me to rewrite the script with this approach?
+
+
+
+===========================================================================
+I don't know that "false positives are impossible", you gave counterexamples,
+like only->on or early->ear, those are not correct lemmatizations
+===========================================================================
+
+You're right, I contradicted myself. `only → on` and `early → ear` would both pass the check — `on` and `ear` are valid headwords — but they're wrong lemmatizations. The headword-existence check prevents nonsense like `usually → usuall` but doesn't prevent plausible-but-wrong matches.
+
+The `-ly` case is actually the trickiest because English `-ly` adverbs derive from adjectives, not by simple suffix stripping — `usual → usually`, `figurative → figuratively` — but the `-ly` form often doesn't cleanly reverse: `early`, `only`, `only`, `lonely`, `likely`, `friendly`, `ugly` are all adjectives or have unrelated roots.
+
+A more conservative approach that avoids the false positives:
+
+**Strip `-ly` only if the candidate ends in a recognizable adjective-forming base**, specifically if the candidate ends in `-al`, `-ive`, `-ous`, `-ful`, `-less`, `-ent`, `-ant`, `-ic`:
+
+```python
+ADJ_SUFFIXES = ("al", "ive", "ous", "ful", "less", "ent", "ant", "ic")
+
+def strip_ly(word: str, headwords: set) -> str:
+    if word.endswith("ly"):
+        candidate = word[:-2]
+        if candidate in headwords and candidate.endswith(ADJ_SUFFIXES):
+            return candidate
+    return word
+```
+
+This correctly handles `usually→usual`, `figuratively→figurative`, `excessively→excessive`, `suddenly→sudden`... wait, `sudden` doesn't end in any of those. So you'd still miss some.
+
+Honestly the cleanest solution might be a small manually-curated exceptions dict for the words your assessment script tells you are the highest-frequency misses, combined with the conservative `-ly` rule for the long tail. The assessment script already does the ranking — you know exactly which words are worth fixing and how many definitions each one affects.
+
+
+===========================================================================
+having to add explicit coding for edge cases is exactly what I hoped to avoid;
+am I just running up against an inherent limitation of NLP?
+===========================================================================
+
+Yes, pretty much. This is a well-known hard problem in NLP called **morphological analysis**, and the difficulty is inherent to English specifically:
+
+English spelling evolved from multiple source languages (Latin, French, Old English, Greek) with different morphological rules that got layered on top of each other without cleanup. So there's no single consistent rule set. `-ly` adverbs are a perfect example — some derive from adjectives (`usual→usually`), some are freestanding words that happen to end in `-ly` (`early`, `only`, `only`), some derive from nouns (`friendly`, `lonely`). A rule can't distinguish these without knowing etymology.
+
+The tools that do this well — like a full morphological lexicon — essentially cheat by having a human-curated lookup table for every word form in the language. That's what something like the **LEMMA lexicon** or **Unimorph** project contains. spaCy's `en_core_web_sm` model learned its lemmatizations statistically from a corpus, so it's good on common words and poor on less-frequent ones.
+
+The most complete solution available in Python would be **`pymorphy2`** (English variant) or looking up against the **NLTK WordNet morphological exception lists** directly — WordNet actually has hand-curated exception tables for exactly these cases that bypass the rule-based lemmatizer. The irony is you were using NLTK already but the `WordNetLemmatizer` only consults those exceptions if you give it the right POS tag, which you were doing via the tagger — so the failure was likely the tagger miscategorizing adverbs rather than the lemmatizer itself.
+
+That suggests a targeted fix: before scrapping NLTK, try forcing `-ly` words through the lemmatizer explicitly as adverbs:
+
+```python
+lemmatizer.lemmatize("usually", wordnet.ADV)   # → "usual" ?
+lemmatizer.lemmatize("figuratively", wordnet.ADV)  # → "figurative" ?
+```
+
+If WordNet's exception tables cover these, that might solve it within your existing NLTK setup. Worth a quick test in a Python shell before changing anything.
+
+
+
+===========================================================================
+what is that test in a python shell?
+===========================================================================
+
+```python
+import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import wordnet
+
+lemmatizer = WordNetLemmatizer()
+
+words = ["usually", "figuratively", "suddenly", "excessively", "accidentally", "early", "only", "friendly"]
+for w in words:
+    print(f"{w:20} → {lemmatizer.lemmatize(w, wordnet.ADV)}")
+```
+
+This tests whether WordNet's hand-curated adverb exception tables know the correct lemma for each word, without any POS tagger involved — you're forcing `ADV` directly. The interesting cases are `early`, `only`, and `friendly` at the bottom — if they come back unchanged (i.e. `early→early`) then WordNet is being conservative and the false positive problem goes away. If they come back as `ear`, `on`, `friend` then we're no better off.
+
 
