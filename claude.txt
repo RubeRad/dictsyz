@@ -162,3 +162,152 @@ Rank   Word                           Occurrences
 The heavy hitters at the top will likely be abbreviations (`esp`, `cf`, `viz`, `ie`), stop words that slipped through (`an`, `by`), and very common words whose lemmatized form didn't match any headword. Those give you a clear picture of where the dictionary's coverage gaps are.
 
 
+===========================================================================
+That also worked. You're right, abbreviations are a problem (etc, esp, illust,
+cf, pl, ob, ...) also place names (england, america, europe, asia, africa,
+france, california, scotland, rome, ...).
+
+But also there are a bunch of adverbs that didn't get lemmatized. usually was in
+definitions 1636 times, usual is a headword; figuratively was in definitions 243
+times, figurative is a headword; others was used 524 times, other is a
+headword. How should cases like these be handled? Does the lemmatization need to
+be tweaked?
+===========================================================================
+
+
+The issue is that NLTK's lemmatizer is getting the POS tag wrong for these words in dictionary definition context. `usually` is being tagged as something other than an adverb, so it gets lemmatized as a noun (its own "base form") rather than stripped to `usual`. Same story for `others` — tagged as a plural noun rather than as the adjective `other`, so lemmatizer returns `others` not `other`.
+
+You can verify this quickly:
+```python
+import nltk
+nltk.pos_tag(["usually", "others", "figuratively"])
+# likely returns: [('usually', 'RB'), ('others', 'NNS'), ('figuratively', 'RB')]
+```
+
+The problem is that WordNet's lemmatizer **can** handle adverbs in principle, but in practice its adverb coverage is very sparse — `usually → usual` and `figuratively → figurative` simply aren't in its adverb→adjective mapping. It handles nouns and verbs well, adjectives decently, adverbs poorly.
+
+**The recommended fix: add a second-pass fallback using a rule-based suffix stripper.** NLTK includes the `SnowballStemmer` but that's too aggressive (it chops to non-words). Better options:
+
+**Option 1 — Try all four POS tags on each word** and take the shortest result (a common trick):
+```python
+def lemmatize_best(word):
+    candidates = [lemmatizer.lemmatize(word, pos) for pos in 
+                  (wordnet.NOUN, wordnet.VERB, wordnet.ADJ, wordnet.ADV)]
+    # prefer the result that actually changed the word
+    changed = [c for c in candidates if c != word]
+    return changed[0] if changed else word
+```
+This helps with `others → other` but still won't fix the adverb→adjective gap.
+
+**Option 2 — Use `spaCy` instead of NLTK** (recommended if you're willing to swap libraries):
+```bash
+pip install spacy
+python -m spacy download en_core_web_sm
+```
+spaCy's lemmatizer handles adverbs much better because it uses a full morphological lookup table rather than WordNet. `usually → usual`, `figuratively → figurative`, `others → other` all work correctly.
+
+The change to your parsing code is minimal — replace the NLTK lemmatize call with `token.lemma_` from a spaCy doc.
+
+**Option 3 — Keep NLTK but add a manual post-processing dict** for the most frequent offenders. Given your assessment script now tells you exactly which words are missing and how often, you could patch the top 50 or so:
+```python
+MANUAL_LEMMAS = {
+    "usually": "usual",
+    "figuratively": "figurative",
+    "others": "other",
+    # ...
+}
+```
+
+My recommendation would be **Option 2 (spaCy)** if you want the cleanest solution, since it fixes the whole class of problem rather than patching symptoms. But if you'd rather not change dependencies, **Option 1 combined with Option 3** for the residual cases is a reasonable pragmatic approach. Would you like me to rewrite the parser with spaCy?
+
+
+===========================================================================
+yes rewrite with spaCy and minimize the number of changed lines so the commit is
+a small diff that is easy to review
+===========================================================================
+
+The diff is small — only the top third of the file changed. In summary:
+
+**Removed (~20 lines):**
+- `nltk`, `WordNetLemmatizer`, `wordnet` imports
+- The NLTK data download block
+- `lemmatizer`, `_POS_MAP`, `_wn_pos()` — all the machinery for mapping POS tags to WordNet constants
+
+**Added (~8 lines):**
+- `import spacy` and `nlp = spacy.load("en_core_web_sm")`
+- Simplified `lemmatize_words` — just iterates spaCy tokens and reads `token.lemma_`; spaCy handles tokenization, POS tagging, and lemmatization internally in one pass
+
+Everything from `_POS_RE` onward is untouched.
+
+**Setup:**
+```bash
+pip install spacy
+python -m spacy download en_core_web_sm
+```
+
+One heads-up: spaCy will be noticeably slower than NLTK on a large dictionary because `nlp()` runs a full pipeline (tagger, parser, NER) on each definition string. If speed is a concern you can disable the unused components:
+```python
+nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+```
+That keeps only the tagger and lemmatizer, which is all `lemmatize_words` actually needs.
+
+
+
+===========================================================================
+Tried to install spacy for ubuntu, python3 -m pip install spacy said I should
+use apt, but sudo apt install python3-spacy was unable to locate the package
+===========================================================================
+
+This is a common friction point on Ubuntu. The `apt` advice is overly cautious — it's safe to override it for a user-level install. Try:
+
+```bash
+pip install spacy --break-system-packages
+python -m spacy download en_core_web_sm
+```
+
+The `--break-system-packages` flag is just acknowledging that you're installing outside apt's management, which is fine for your own scripts. If you'd prefer to keep things tidy, a virtual environment is the cleaner approach:
+
+```bash
+python3 -m venv ~/.venvs/dictparser
+source ~/.venvs/dictparser/bin/activate
+pip install spacy
+python -m spacy download en_core_web_sm
+```
+
+Then just `source ~/.venvs/dictparser/bin/activate` at the start of any session before running the scripts. The venv approach also has the advantage that if anything goes wrong you can just delete `~/.venvs/dictparser` and start over with no system impact.
+
+
+===========================================================================
+what is the shebang line that should be at the top of the python scripts to run
+the right python from the virtual environment?
+===========================================================================
+
+If you're always activating the venv before running the scripts, any shebang works because `activate` puts the venv's python first in your PATH — `#!/usr/bin/env python3` is fine.
+
+If you want the scripts to use the venv's python without activating first, hardcode the path:
+
+```python
+#!/home/yourusername/.venvs/dictparser/bin/python
+```
+
+The hardcoded path is more explicit but ties the script to that specific venv location. The `env` form is more portable but depends on the venv being active. For personal scripts you'll always run from the same machine, the hardcoded path is the more robust choice.
+
+
+
+===========================================================================
+using spaCy the script is now a lot slower. With nltk it took 1m38s on my
+laptop, now with spaCy it's been 5-10 minutes and still going. Add to the script
+a simple progress indicator of how far through the input file it is
+===========================================================================
+
+The easiest approach is to count lines first, then print a percentage every N lines. Minimal diff — only `parse_dictionary` changes:The `\r` carriage return overwrites the same line each time rather than scrolling, so you'll see a single `  4%` that ticks up in place. The pre-scan to count total lines adds a negligible second at the start.
+
+Also worth doing separately — the `disable=["parser", "ner"]` suggestion from earlier will likely cut your runtime significantly since those are the expensive parts of the spaCy pipeline and you don't need them:
+
+```python
+nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+```
+
+That one-line change could get you close to the NLTK speed while keeping the better lemmatization.
+
+

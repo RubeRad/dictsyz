@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 """
 parse_dictionary.py
 
@@ -10,8 +12,8 @@ Parses a plain-text English dictionary (one entry per line, format:
 Saves output as both pickle and JSON.
 
 Requirements:
-    pip install nltk
-    python -c "import nltk; nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('punkt_tab'); nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
+    pip install spacy
+    python -m spacy download en_core_web_sm
 """
 
 import re
@@ -20,42 +22,24 @@ import json
 import string
 from collections import defaultdict
 
-import nltk
-from nltk.stem import WordNetLemmatizer
-from nltk.corpus import wordnet
+import spacy
 
-lemmatizer = WordNetLemmatizer()
+nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-# POS tag → WordNet POS constant (for accurate lemmatization)
-_POS_MAP = {
-    "J": wordnet.ADJ,
-    "V": wordnet.VERB,
-    "N": wordnet.NOUN,
-    "R": wordnet.ADV,
-}
-
-def _wn_pos(treebank_tag: str) -> str:
-    """Map a Penn Treebank POS tag to a WordNet POS tag."""
-    return _POS_MAP.get(treebank_tag[0], wordnet.NOUN)
-
-
 def lemmatize_words(text: str) -> list[str]:
     """
-    Tokenize *text*, POS-tag each token, lemmatize, lowercase, and return
+    Tokenize *text*, lemmatize, lowercase, and return
     only alphabetic tokens (no punctuation, numbers, or single letters).
     """
-    tokens = nltk.word_tokenize(text)
-    tagged = nltk.pos_tag(tokens)
     result = []
-    for word, tag in tagged:
-        if not word.isalpha() or len(word) < 2:
+    for token in nlp(text):
+        if not token.is_alpha or len(token) < 2:
             continue
-        lemma = lemmatizer.lemmatize(word.lower(), _wn_pos(tag))
-        result.append(lemma)
+        result.append(token.lemma_.lower())
     return result
 
 
@@ -106,14 +90,20 @@ def parse_dictionary(filepath: str) -> dict[str, list[str]]:
     """
     accumulator: defaultdict[str, set[str]] = defaultdict(set)
 
+    total_lines = sum(1 for _ in open(filepath, encoding="utf-8", errors="replace"))
+    report_every = max(1, total_lines // 100)  # print every 1% of lines
+
     with open(filepath, encoding="utf-8", errors="replace") as fh:
         for lineno, line in enumerate(fh, 1):
+            if lineno % report_every == 0:
+                print(f"\r  {lineno / total_lines:.0%}", end="", flush=True)
             parsed = parse_line(line)
             if parsed is None:
                 continue
             headword, raw_def = parsed
             words = parse_definition_text(raw_def)
             accumulator[headword].update(words)
+    print()  # newline after progress indicator
 
     # Convert sets → sorted lists for deterministic output
     return {word: sorted(def_words) for word, def_words in sorted(accumulator.items())}
