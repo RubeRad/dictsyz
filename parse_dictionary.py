@@ -11,7 +11,7 @@ Saves output as both pickle and JSON.
 
 Requirements:
     pip install nltk
-    python -c "import nltk; nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('punkt_tab')"
+    python -c "import nltk; nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('punkt_tab'); nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
 """
 
 import re
@@ -23,15 +23,6 @@ from collections import defaultdict
 import nltk
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import wordnet
-
-# ---------------------------------------------------------------------------
-# NLTK setup — download quietly if not already present
-# ---------------------------------------------------------------------------
-for resource in ("wordnet", "averaged_perceptron_tagger_eng", "punkt_tab", "omw-1.4"):
-    try:
-        nltk.data.find(f"corpora/{resource}" if resource != "averaged_perceptron_tagger_eng" else f"taggers/{resource}")
-    except LookupError:
-        nltk.download(resource, quiet=True)
 
 lemmatizer = WordNetLemmatizer()
 
